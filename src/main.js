@@ -4,12 +4,15 @@
 import { CameraManager } from './vision/camera.js';
 import { PoseEstimator } from './vision/pose.js';
 import { GestureDetector } from './vision/gestureDetector.js';
+import { MenuUI } from './ui/menu.js';
+import { HudUI } from './ui/hud.js';
 
 export const GameState = Object.freeze({
   MENU: 'MENU',
   CALIBRATION: 'CALIBRATION',
   TUTORIAL: 'TUTORIAL',
   GAME: 'GAME',
+  PAUSED: 'PAUSED',
   GAME_OVER: 'GAME_OVER',
 });
 
@@ -48,6 +51,12 @@ export class Game {
     // здесь и забираются игровым циклом ровно один раз.
     this.pendingGestures = [];
     this.lastGesture = null; // для отладочного вывода
+    this.hud = null;
+    this.score = 0;
+    this.combo = 0;
+    this.hp = 100;
+    this.progress = 0;
+    this.pausedFrom = null;
 
     this.lastTime = 0;
     this.rafId = null;
@@ -70,7 +79,9 @@ export class Game {
     window.addEventListener('keydown', this.handleDebugInput);
     this.canvas.addEventListener('click', this.handleDebugInput);
 
-    await this.initCamera();
+    const cameraInitialization = this.initCamera();
+    this.start();
+    await cameraInitialization;
   }
 
   start() {
@@ -146,6 +157,36 @@ export class Game {
     this.state = newState;
     this.stateTime = 0;
     this.onEnterState(newState, prev);
+
+    if (this.hud) {
+      this.hud.setPaused(newState === GameState.PAUSED);
+      if ([GameState.CALIBRATION, GameState.TUTORIAL, GameState.GAME, GameState.PAUSED].includes(newState)) {
+        this.hud.show();
+      } else {
+        this.hud.hide();
+      }
+    }
+  }
+
+  pause() {
+    if (this.state === GameState.PAUSED || this.state === GameState.MENU) return;
+    this.pausedFrom = this.state;
+    this.setState(GameState.PAUSED);
+  }
+
+  resume() {
+    if (this.state !== GameState.PAUSED) return;
+    const state = this.pausedFrom ?? GameState.GAME;
+    this.pausedFrom = null;
+    this.setState(state);
+  }
+
+  resetRun() {
+    this.score = 0;
+    this.combo = 0;
+    this.hp = 100;
+    this.progress = 0;
+    this.hud?.update({ score: 0, combo: 0, hp: 100, progress: 0 });
   }
 
   onEnterState(state, prevState) {
@@ -169,12 +210,12 @@ export class Game {
   // ---------- Заглушки для модулей ----------
 
   async initCamera() {
-    await this.camera.init();
     this.poseEstimator.init((results) => {
       this.landmarks = results.poseLandmarks ?? null;
       this.gestureState = this.gestureDetector.processLandmarks(this.landmarks, this.width, this.height);
       this.pendingGestures.push(...this.gestureState.gestures);
     });
+    await this.camera.init();
   }
 
   // gestures — жесты, распознанные с прошлого кадра: [{ type, hand, x, y, speed }].
@@ -185,6 +226,11 @@ export class Game {
     for (const gesture of gestures) {
       console.log(`[Gesture] ${gesture.type} (${gesture.hand})`);
       this.lastGesture = { ...gesture, time: performance.now() };
+      if ([GameState.CALIBRATION, GameState.TUTORIAL, GameState.GAME].includes(this.state)) {
+        this.score += 100;
+        this.combo += 1;
+        this.hud?.update({ score: this.score, combo: this.combo, hp: this.hp, progress: this.progress });
+      }
     }
 
     switch (this.state) {
@@ -274,9 +320,32 @@ export class Game {
 
 async function bootstrap() {
   const game = new Game('game-canvas');
+  const hud = new HudUI({
+    onPause: () => game.pause(),
+    onResume: () => game.resume(),
+    onExitToMenu: () => {
+      game.pausedFrom = null;
+      game.setState(GameState.MENU);
+      game.resetRun();
+      menu.showMenu();
+    },
+  });
+  hud.render(document.body);
+  game.hud = hud;
+  const menu = new MenuUI({
+    onStartGame: () => {
+      game.resetRun();
+      game.setState(GameState.CALIBRATION);
+      hud.setPaused(false);
+      hud.show();
+      menu.showGameView();
+    },
+  });
+  menu.render(document.body);
   await game.init();
-  game.start();
+  menu.setCameraReady(game.camera.ready);
   window.game = game; // доступ из консоли для отладки
+  window.menu = menu;
 }
 
 if (document.readyState === 'loading') {
