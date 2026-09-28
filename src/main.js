@@ -1,6 +1,8 @@
 // Motion Guardian — точка входа.
 // Каркас: canvas, игровой цикл, машина состояний и заглушки для будущих модулей.
 
+import { CameraManager } from './vision/camera.js';
+
 export const GameState = Object.freeze({
   MENU: 'MENU',
   CALIBRATION: 'CALIBRATION',
@@ -34,6 +36,8 @@ export class Game {
 
     this.state = GameState.MENU;
     this.stateTime = 0; // сколько секунд прошло в текущем состоянии
+
+    this.camera = new CameraManager();
 
     this.lastTime = 0;
     this.rafId = null;
@@ -153,7 +157,8 @@ export class Game {
   // ---------- Заглушки для модулей ----------
 
   async initCamera() {
-    // TODO: подключить модуль камеры (getUserMedia + трекинг движений)
+    // TODO: трекинг движений
+    await this.camera.init();
   }
 
   updateGameLogic(deltaTime) {
@@ -179,8 +184,11 @@ export class Game {
   }
 
   render(ctx) {
-    ctx.fillStyle = '#0b0f1a';
-    ctx.fillRect(0, 0, this.width, this.height);
+    // Видео с камеры — фон; пока кадра нет, заливаем тёмным цветом.
+    if (!this.camera.render(ctx, this.width, this.height)) {
+      ctx.fillStyle = '#0b0f1a';
+      ctx.fillRect(0, 0, this.width, this.height);
+    }
 
     this.renderStateLabel(ctx);
     this.renderDebugInfo(ctx);
