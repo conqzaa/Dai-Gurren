@@ -2,6 +2,8 @@
 // Каркас: canvas, игровой цикл, машина состояний и заглушки для будущих модулей.
 
 import { CameraManager } from './vision/camera.js';
+import { PoseEstimator } from './vision/pose.js';
+import { GestureDetector } from './vision/gestureDetector.js';
 
 export const GameState = Object.freeze({
   MENU: 'MENU',
@@ -38,6 +40,14 @@ export class Game {
     this.stateTime = 0; // сколько секунд прошло в текущем состоянии
 
     this.camera = new CameraManager();
+    this.poseEstimator = new PoseEstimator();
+    this.landmarks = null; // последние распознанные точки позы
+    this.gestureDetector = new GestureDetector(this.poseEstimator);
+    this.gestureState = null; // руки и жесты из последнего результата MediaPipe
+    // MediaPipe выдаёт результаты реже, чем идут кадры, поэтому жесты копятся
+    // здесь и забираются игровым циклом ровно один раз.
+    this.pendingGestures = [];
+    this.lastGesture = null; // для отладочного вывода
 
     this.lastTime = 0;
     this.rafId = null;
@@ -104,7 +114,9 @@ export class Game {
     this.lastTime = now;
 
     this.updateFps(deltaTime);
-    this.updateGameLogic(deltaTime);
+    const gestures = this.pendingGestures;
+    this.pendingGestures = [];
+    this.updateGameLogic(deltaTime, gestures);
     this.render(this.ctx);
 
     this.rafId = requestAnimationFrame(this.loop);
@@ -157,12 +169,23 @@ export class Game {
   // ---------- Заглушки для модулей ----------
 
   async initCamera() {
-    // TODO: трекинг движений
     await this.camera.init();
+    this.poseEstimator.init((results) => {
+      this.landmarks = results.poseLandmarks ?? null;
+      this.gestureState = this.gestureDetector.processLandmarks(this.landmarks, this.width, this.height);
+      this.pendingGestures.push(...this.gestureState.gestures);
+    });
   }
 
-  updateGameLogic(deltaTime) {
+  // gestures — жесты, распознанные с прошлого кадра: [{ type, hand, x, y, speed }].
+  // Текущее положение рук — this.gestureState?.hands.
+  updateGameLogic(deltaTime, gestures = []) {
     this.stateTime += deltaTime;
+
+    for (const gesture of gestures) {
+      console.log(`[Gesture] ${gesture.type} (${gesture.hand})`);
+      this.lastGesture = { ...gesture, time: performance.now() };
+    }
 
     switch (this.state) {
       case GameState.MENU:
@@ -175,7 +198,7 @@ export class Game {
         // TODO: обучение
         break;
       case GameState.GAME:
-        // TODO: основной игровой процесс
+        // TODO: основной игровой процесс — реакция на gestures (PUNCH_*, SWIPE_*)
         break;
       case GameState.GAME_OVER:
         // TODO: экран результатов
@@ -189,6 +212,12 @@ export class Game {
       ctx.fillStyle = '#0b0f1a';
       ctx.fillRect(0, 0, this.width, this.height);
     }
+
+    // Распознавание асинхронное: кадр уходит в MediaPipe, результат придёт в колбэк.
+    if (this.camera.ready) {
+      this.poseEstimator.detect(this.camera.video);
+    }
+    this.poseEstimator.drawLandmarks(ctx, this.landmarks, this.width, this.height);
 
     this.renderStateLabel(ctx);
     this.renderDebugInfo(ctx);
@@ -226,6 +255,17 @@ export class Game {
     ctx.textBaseline = 'top';
     ctx.fillText(`FPS: ${this.fps}`, 12, 12);
     ctx.fillText(`State time: ${this.stateTime.toFixed(1)}s`, 12, 30);
+
+    const hands = this.gestureState?.hands;
+    if (hands) {
+      const raised = ['left', 'right'].filter((side) => hands[side].raised);
+      ctx.fillText(`Raised: ${raised.length ? raised.join(', ') : '—'}`, 12, 48);
+    }
+    if (this.lastGesture && performance.now() - this.lastGesture.time < 1000) {
+      ctx.fillStyle = '#f6ad55';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillText(`${this.lastGesture.type} (${this.lastGesture.hand})`, 12, 70);
+    }
     ctx.restore();
   }
 }
